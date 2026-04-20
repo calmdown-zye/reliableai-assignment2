@@ -3,6 +3,10 @@ from collections import defaultdict
 
 import numpy as np
 import torch
+import torchvision
+import torchvision.transforms as transforms
+
+
 
 # CIFAR-10 클래스 이름
 CIFAR10_CLASSES = ['airplane', 'automobile', 'bird', 'cat', 'deer',
@@ -151,3 +155,20 @@ def full_coverage(model_layer_dict):
 def diverged(predictions1, predictions2):
     # 원본은 모델 3개 → 2개로 변경
     return predictions1 != predictions2
+
+
+
+def compute_mean_std():
+    transform = transforms.Compose([transforms.ToTensor()])
+    dataset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=1000, shuffle=False, num_workers=0)
+    
+    mean = torch.zeros(3)
+    std = torch.zeros(3)
+    for images, _ in loader:
+        for c in range(3):
+            mean[c] += images[:, c, :, :].mean()
+            std[c] += images[:, c, :, :].std()
+    mean /= len(loader)
+    std /= len(loader)
+    return mean.tolist(), std.tolist()
