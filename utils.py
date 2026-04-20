@@ -41,10 +41,16 @@ def constraint_occl(gradients, start_point, rect_shape):
     return new_grads
 
 
+# def constraint_light(gradients):
+#     # 변경 없음
+#     new_grads = np.ones_like(gradients)
+#     grad_mean = 1e4 * np.mean(gradients)
+#     return grad_mean * new_grads
+
 def constraint_light(gradients):
-    # 변경 없음
+    # 원본의 1e4 스케일은 너무 커서 이미지가 범위를 벗어남 → 1.0으로 조정
     new_grads = np.ones_like(gradients)
-    grad_mean = 1e4 * np.mean(gradients)
+    grad_mean = np.mean(gradients)
     return grad_mean * new_grads
 
 
