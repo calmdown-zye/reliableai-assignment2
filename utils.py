@@ -2,138 +2,152 @@ import random
 from collections import defaultdict
 
 import numpy as np
-from keras import backend as K
-from keras.applications.vgg16 import preprocess_input, decode_predictions
-from keras.models import Model
-from keras_preprocessing import image
+import torch
+
+# CIFAR-10 클래스 이름
+CIFAR10_CLASSES = ['airplane', 'automobile', 'bird', 'cat', 'deer',
+                   'dog', 'frog', 'horse', 'ship', 'truck']
 
 
-def preprocess_image(img_path): 
-    img = image.load_img(img_path, target_size=(224, 224))
-    input_img_data = image.img_to_array(img)
-    input_img_data = np.expand_dims(input_img_data, axis=0)
-    input_img_data = preprocess_input(input_img_data)  # final input shape = (1,224,224,3)
-    return input_img_data
-
-
-def deprocess_image(x):
-    x = x.reshape((224, 224, 3))
-    # Remove zero-center by mean pixel
-    x[:, :, 0] += 103.939
-    x[:, :, 1] += 116.779
-    x[:, :, 2] += 123.68
-    # 'BGR'->'RGB'
-    x = x[:, :, ::-1]
-    x = np.clip(x, 0, 255).astype('uint8')
+def deprocess_image(x, mean, std):
+    # mean, std: train.py에서 계산한 값을 인자로 받음
+    x = x.clone().detach().cpu().numpy()
+    x = x.transpose(1, 2, 0)  # CHW → HWC
+    x = x * std + mean
+    x = np.clip(x, 0, 1)
     return x
 
-
-def decode_label(pred):
-    return decode_predictions(pred)[0][0][1]
+def decode_label(pred_idx):
+    # 원본은 ImageNet 1000클래스 → CIFAR-10 10클래스로 교체
+    return CIFAR10_CLASSES[pred_idx]
 
 
 def normalize(x):
-    # utility function to normalize a tensor by its L2 norm
-    return x / (K.sqrt(K.mean(K.square(x))) + 1e-5)
+    # 원본은 K.sqrt 등 Keras 백엔드 사용 → numpy로 교체
+    return x / (np.sqrt(np.mean(np.square(x))) + 1e-5)
 
 
 def constraint_occl(gradients, start_point, rect_shape):
+    # 변경 없음 (numpy 연산이라 그대로 사용 가능)
     new_grads = np.zeros_like(gradients)
     new_grads[:, start_point[0]:start_point[0] + rect_shape[0],
-    start_point[1]:start_point[1] + rect_shape[1]] = gradients[:, start_point[0]:start_point[0] + rect_shape[0],
-                                                     start_point[1]:start_point[1] + rect_shape[1]]
+              start_point[1]:start_point[1] + rect_shape[1]] = \
+        gradients[:, start_point[0]:start_point[0] + rect_shape[0],
+                  start_point[1]:start_point[1] + rect_shape[1]]
     return new_grads
 
 
 def constraint_light(gradients):
+    # 변경 없음
     new_grads = np.ones_like(gradients)
     grad_mean = 1e4 * np.mean(gradients)
     return grad_mean * new_grads
 
 
 def constraint_black(gradients, rect_shape=(10, 10)):
+    # 변경 없음
     start_point = (
-        random.randint(0, gradients.shape[1] - rect_shape[0]), random.randint(0, gradients.shape[2] - rect_shape[1]))
+        random.randint(0, gradients.shape[1] - rect_shape[0]),
+        random.randint(0, gradients.shape[2] - rect_shape[1])
+    )
     new_grads = np.zeros_like(gradients)
-    patch = gradients[:, start_point[0]:start_point[0] + rect_shape[0], start_point[1]:start_point[1] + rect_shape[1]]
+    patch = gradients[:, start_point[0]:start_point[0] + rect_shape[0],
+                          start_point[1]:start_point[1] + rect_shape[1]]
     if np.mean(patch) < 0:
         new_grads[:, start_point[0]:start_point[0] + rect_shape[0],
-        start_point[1]:start_point[1] + rect_shape[1]] = -np.ones_like(patch)
+                      start_point[1]:start_point[1] + rect_shape[1]] = -np.ones_like(patch)
     return new_grads
 
 
-def init_coverage_tables(model1, model2, model3):
+def init_coverage_tables(model1, model2):
+    # 원본은 모델 3개 고정 → 2개로 변경
     model_layer_dict1 = defaultdict(bool)
     model_layer_dict2 = defaultdict(bool)
-    model_layer_dict3 = defaultdict(bool)
     init_dict(model1, model_layer_dict1)
     init_dict(model2, model_layer_dict2)
-    init_dict(model3, model_layer_dict3)
-    return model_layer_dict1, model_layer_dict2, model_layer_dict3
+    return model_layer_dict1, model_layer_dict2
 
 
 def init_dict(model, model_layer_dict):
-    for layer in model.layers:
-        if 'flatten' in layer.name or 'input' in layer.name:
-            continue
-        for index in range(layer.output_shape[-1]):
-            model_layer_dict[(layer.name, index)] = False
+    # 원본은 Keras model.layers 순회 → PyTorch named_modules로 교체
+    for name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear, torch.nn.BatchNorm2d)):
+            # 뉴런 수 = 출력 채널 수
+            if hasattr(module, 'out_channels'):
+                num_neurons = module.out_channels
+            elif hasattr(module, 'out_features'):
+                num_neurons = module.out_features
+            else:
+                continue
+            for index in range(num_neurons):
+                model_layer_dict[(name, index)] = False
 
 
 def neuron_to_cover(model_layer_dict):
-    not_covered = [(layer_name, index) for (layer_name, index), v in model_layer_dict.items() if not v]
+    not_covered = [(layer_name, index)
+                   for (layer_name, index), v in model_layer_dict.items() if not v]
     if not_covered:
         layer_name, index = random.choice(not_covered)
     else:
-        layer_name, index = random.choice(model_layer_dict.keys())
+        layer_name, index = random.choice(list(model_layer_dict.keys()))
     return layer_name, index
 
 
 def neuron_covered(model_layer_dict):
     covered_neurons = len([v for v in model_layer_dict.values() if v])
-    total_neurons = len(model_layer_dict)
+    total_neurons   = len(model_layer_dict)
     return covered_neurons, total_neurons, covered_neurons / float(total_neurons)
 
 
-def scale(intermediate_layer_output, rmax=1, rmin=0):
-    X_std = (intermediate_layer_output - intermediate_layer_output.min()) / (
-            intermediate_layer_output.max() - intermediate_layer_output.min())
+def scale(x, rmax=1, rmin=0):
+    # 변경 없음
+    x_min, x_max = x.min(), x.max()
+    if x_max == x_min:
+        return np.zeros_like(x)
+    X_std    = (x - x_min) / (x_max - x_min)
     X_scaled = X_std * (rmax - rmin) + rmin
     return X_scaled
 
 
-def update_coverage(input_data, model, model_layer_dict, threshold=0):
-    layer_names = [layer.name for layer in model.layers if
-                   'flatten' not in layer.name and 'input' not in layer.name]
+def update_coverage(input_tensor, model, model_layer_dict, threshold=0.5):
+    # 원본은 Keras intermediate_layer_model + xrange →
+    # PyTorch forward hook으로 중간 레이어 출력 수집
+    activation = {}
 
-    intermediate_layer_model = Model(inputs=model.input,
-                                     outputs=[model.get_layer(layer_name).output for layer_name in layer_names])
-    intermediate_layer_outputs = intermediate_layer_model.predict(input_data)
+    hooks = []
+    for name, module in model.named_modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear, torch.nn.BatchNorm2d)):
+            def make_hook(n):
+                def hook(module, input, output):
+                    activation[n] = output.detach()
+                return hook
+            hooks.append(module.register_forward_hook(make_hook(name)))
 
-    for i, intermediate_layer_output in enumerate(intermediate_layer_outputs):
-        scaled = scale(intermediate_layer_output[0])
-        for num_neuron in xrange(scaled.shape[-1]):
-            if np.mean(scaled[..., num_neuron]) > threshold and not model_layer_dict[(layer_names[i], num_neuron)]:
-                model_layer_dict[(layer_names[i], num_neuron)] = True
+    model.eval()
+    with torch.no_grad():
+        model(input_tensor)
+
+    for h in hooks:
+        h.remove()
+
+    for name, act in activation.items():
+        # (batch, C, H, W) or (batch, C) → 채널별 평균
+        if act.dim() == 4:
+            act_mean = act[0].mean(dim=(1, 2)).cpu().numpy()  # (C,)
+        else:
+            act_mean = act[0].cpu().numpy()  # (C,)
+
+        scaled = scale(act_mean)
+        for num_neuron in range(len(scaled)):
+            if scaled[num_neuron] > threshold and not model_layer_dict[(name, num_neuron)]:
+                model_layer_dict[(name, num_neuron)] = True
 
 
 def full_coverage(model_layer_dict):
-    if False in model_layer_dict.values():
-        return False
-    return True
+    # 변경 없음
+    return all(model_layer_dict.values())
 
 
-def fired(model, layer_name, index, input_data, threshold=0):
-    intermediate_layer_model = Model(inputs=model.input, outputs=model.get_layer(layer_name).output)
-    intermediate_layer_output = intermediate_layer_model.predict(input_data)[0]
-    scaled = scale(intermediate_layer_output)
-    if np.mean(scaled[..., index]) > threshold:
-        return True
-    return False
-
-
-def diverged(predictions1, predictions2, predictions3, target):
-    #     if predictions2 == predictions3 == target and predictions1 != target:
-    if not predictions1 == predictions2 == predictions3:
-        return True
-    return False
+def diverged(predictions1, predictions2):
+    # 원본은 모델 3개 → 2개로 변경
+    return predictions1 != predictions2
