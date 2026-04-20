@@ -1,5 +1,5 @@
 '''
-usage: python gen_diff.py -h
+reference 의 gen_diff.py 를 수정 usage: python gen_diff.py -h
 '''
 
 from __future__ import print_function
