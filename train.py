@@ -9,29 +9,13 @@ import os
 from tqdm import tqdm
 from torchvision.models import resnet50
 import torchvision.transforms as transforms
-
+from utils import compute_mean_std
 # 1. data loda function
 # 2. model load function
 # 3. train function
 # main 
 
 
-def compute_mean_std():
-    transform = transforms.Compose([transforms.ToTensor()])
-    dataset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=1000, shuffle=False, num_workers=2)
-    
-    mean = torch.zeros(3)
-    std = torch.zeros(3)
-    for images, _ in loader:
-        for c in range(3):
-            mean[c] += images[:, c, :, :].mean()
-            std[c] += images[:, c, :, :].std()
-    mean /= len(loader)
-    std /= len(loader)
-    print(f'Computed Mean: {mean}')
-    print(f'Computed Std: {std}')
-    return mean.tolist(), std.tolist()
 
 
 # 1. data loda function
